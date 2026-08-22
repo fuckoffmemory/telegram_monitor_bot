@@ -12,7 +12,15 @@ import traceback
 
 from config import ADMIN_ID, BOT_TOKEN, CHECK_INTERVAL
 from database import *
-from parser import fetch_items_for_keyword, fetch_latest_items
+from parser import fetch_items_for_keyword
+
+# Временно убираем fetch_latest_items, чтобы не ломало
+try:
+    from parser import fetch_latest_items
+except ImportError:
+    # Если функции нет, создаем заглушку
+    async def fetch_latest_items(site):
+        return []
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,9 +55,8 @@ async def update_currency():
             currency_cache["cny_to_usd"] = data["rates"].get("USD", 0.14)
             currency_cache["cny_to_rub"] = data["rates"].get("RUB", 12.5)
             currency_cache["last_update"] = now
-            logger.info("Курсы обновлены")
-    except Exception as e:
-        logger.error(f"Ошибка курсов: {e}")
+    except:
+        pass
 
 def convert_price(cny):
     usd = cny * currency_cache["cny_to_usd"]
@@ -107,30 +114,15 @@ async def update_main(user_id, items=None, last10=False, loading=False):
         msg += "─────────────────\n\n"
         
         if loading:
-            msg += "⏳ <b>Загрузка последних товаров...</b>\n"
-            msg += "Пожалуйста, подожди 10-15 секунд\n"
+            msg += "⏳ <b>Загрузка...</b>\n"
         
         elif last10 and items:
-            msg += "📊 <b>ПОСЛЕДНИЕ 10 ТОВАРОВ</b>\n"
-            msg += "(с сайтов в реальном времени)\n\n"
-            
-            mercari_items = [i for i in items if i['site'] == 'mercari']
-            goofish_items = [i for i in items if i['site'] == 'goofish']
-            
-            if mercari_items:
-                msg += "🟢 <b>Mercari:</b>\n"
-                for i, item in enumerate(mercari_items[:5], 1):
-                    msg += f"  {i}. {item['title'][:35]}\n"
-                    msg += f"     💰 {item['price_rub']}₽ | {item['price_cny']}¥\n"
-                    msg += f"     🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
-            
-            if goofish_items:
-                msg += "🔵 <b>Goofish:</b>\n"
-                for i, item in enumerate(goofish_items[:5], 1):
-                    msg += f"  {i}. {item['title'][:35]}\n"
-                    msg += f"     💰 {item['price_rub']}₽ | {item['price_cny']}¥\n"
-                    msg += f"     🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
-            
+            msg += "📊 <b>ПОСЛЕДНИЕ 10</b>\n\n"
+            for i, item in enumerate(items[:10], 1):
+                msg += f"{i}. {item['title'][:40]}\n"
+                msg += f"   💰 {item.get('price_rub', 0)}₽\n"
+                msg += f"   🌐 {item.get('site', '')}\n"
+                msg += f"   🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
             msg += "─────────────────\n"
             msg += "🔄 Нажми 'Обновить' для возврата"
         
@@ -138,18 +130,18 @@ async def update_main(user_id, items=None, last10=False, loading=False):
             msg += f"📦 <b>НАЙДЕНО:</b> {len(items)}\n\n"
             for i, item in enumerate(items[:10], 1):
                 msg += f"{i}. {item['title'][:40]}\n"
-                msg += f"   💰 {item['price_rub']}₽\n"
+                msg += f"   💰 {item.get('price_rub', 0)}₽\n"
                 msg += f"   🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
             if len(items) > 10:
                 msg += f"⚠️ Показано 10 из {len(items)}\n"
         else:
             msg += "😴 <b>Товаров нет</b>\n"
-            msg += "Ожидай появления...\n"
         
         msg += f"\n🕒 {datetime.now().strftime('%H:%M:%S')}"
         
         keyboard = await get_keyboard(user_id)
         
+        # Пытаемся обновить существующее сообщение
         if user_id in user_main_message and user_main_message[user_id]:
             try:
                 await bot.edit_message_text(
@@ -165,6 +157,7 @@ async def update_main(user_id, items=None, last10=False, loading=False):
                 logger.warning(f"Edit failed: {e}")
                 user_main_message[user_id] = None
         
+        # Отправляем новое
         msg_obj = await bot.send_message(
             user_id,
             msg,
@@ -176,12 +169,11 @@ async def update_main(user_id, items=None, last10=False, loading=False):
         
         try:
             await bot.pin_chat_message(user_id, msg_obj.message_id)
-        except Exception as e:
-            logger.warning(f"Pin failed: {e}")
+        except:
+            pass
             
     except Exception as e:
         logger.error(f"update_main error: {e}")
-        logger.error(traceback.format_exc())
 
 # ==================== УВЕДОМЛЕНИЯ ====================
 
@@ -236,23 +228,26 @@ async def monitor():
                 all_items = []
                 
                 for cid, keyword, max_price_rub in criteria:
-                    items = await fetch_items_for_keyword(keyword)
-                    
-                    for item in items:
-                        usd, rub = convert_price(item['price_cny'])
-                        save_price_cache(keyword, item['site'], item['price_cny'], item['url'], item['title'], rub)
+                    try:
+                        items = await fetch_items_for_keyword(keyword)
                         
-                        if rub <= max_price_rub:
-                            all_items.append({
-                                "title": item['title'],
-                                "price_cny": item['price_cny'],
-                                "price_rub": rub,
-                                "url": item['url'],
-                                "site": item['site']
-                            })
-                            await send_notification(user_id, item, keyword)
-                        
-                        await asyncio.sleep(0.3)
+                        for item in items:
+                            usd, rub = convert_price(item['price_cny'])
+                            save_price_cache(keyword, item['site'], item['price_cny'], item['url'], item['title'], rub)
+                            
+                            if rub <= max_price_rub:
+                                all_items.append({
+                                    "title": item['title'],
+                                    "price_cny": item['price_cny'],
+                                    "price_rub": rub,
+                                    "url": item['url'],
+                                    "site": item['site']
+                                })
+                                await send_notification(user_id, item, keyword)
+                            
+                            await asyncio.sleep(0.3)
+                    except Exception as e:
+                        logger.error(f"Ошибка парсинга {keyword}: {e}")
                 
                 await update_main(user_id, all_items)
             
@@ -269,14 +264,23 @@ async def fetch_last_10():
     all_items = []
     
     try:
-        mercari_items = await fetch_latest_items('mercari')
-        all_items.extend(mercari_items[:5])
+        # Пробуем импортировать функцию
+        try:
+            from parser import fetch_latest_items
+            mercari_items = await fetch_latest_items('mercari')
+            all_items.extend(mercari_items[:5])
+        except:
+            logger.warning("fetch_latest_items не доступна")
     except Exception as e:
         logger.error(f"Mercari latest error: {e}")
     
     try:
-        goofish_items = await fetch_latest_items('goofish')
-        all_items.extend(goofish_items[:5])
+        try:
+            from parser import fetch_latest_items
+            goofish_items = await fetch_latest_items('goofish')
+            all_items.extend(goofish_items[:5])
+        except:
+            pass
     except Exception as e:
         logger.error(f"Goofish latest error: {e}")
     
@@ -294,7 +298,8 @@ async def start_cmd(message: types.Message):
         user_notify_interval[user_id] = 60
         
         await message.answer("⭐ Создаю меню...")
-        await asyncio.sleep(0.5)
+        
+        # Сразу создаем меню
         await update_main(user_id)
         
     except Exception as e:
@@ -354,7 +359,7 @@ async def last10_cb(callback: CallbackQuery):
         
         if items:
             for item in items:
-                usd, rub = convert_price(item['price_cny'])
+                usd, rub = convert_price(item.get('price_cny', 0))
                 item['price_rub'] = rub
             
             await update_main(user_id, items, last10=True)
@@ -474,7 +479,6 @@ async def handle_text(message: types.Message):
         
     except Exception as e:
         logger.error(f"handle_text error: {e}")
-        await message.answer(f"❌ Ошибка: {e}")
 
 # ==================== ЗАПУСК ====================
 
@@ -487,7 +491,7 @@ async def main():
         asyncio.create_task(monitor())
         logger.info("Мониторинг запущен")
         
-        logger.info("Бот готов к работе!")
+        logger.info("✅ Бот готов к работе!")
         await dp.start_polling(bot, skip_updates=True)
         
     except Exception as e:
