@@ -8,13 +8,18 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram import F
 import aiohttp
+import traceback
 
 from config import ADMIN_ID, BOT_TOKEN, CHECK_INTERVAL
 from database import *
 from parser import fetch_items_for_keyword
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 print("🚀 Запуск бота...")
 print(f"BOT_TOKEN: {'✅ УСТАНОВЛЕН' if BOT_TOKEN and BOT_TOKEN != 'YOUR_BOT_TOKEN_HERE' else '❌ НЕ УСТАНОВЛЕН'}")
@@ -50,13 +55,14 @@ async def update_currency():
     
     try:
         async with aiohttp.ClientSession() as session:
-            resp = await session.get("https://api.exchangerate-api.com/v4/latest/CNY")
+            resp = await session.get("https://api.exchangerate-api.com/v4/latest/CNY", timeout=10)
             data = await resp.json()
             currency_cache["cny_to_usd"] = data["rates"].get("USD", 0.14)
             currency_cache["cny_to_rub"] = data["rates"].get("RUB", 12.5)
             currency_cache["last_update"] = now
+            logger.info("Курсы валют обновлены")
     except Exception as e:
-        logging.error(f"Ошибка обновления курсов: {e}")
+        logger.error(f"Ошибка обновления курсов: {e}")
 
 def convert_price(cny):
     usd = cny * currency_cache["cny_to_usd"]
@@ -106,140 +112,159 @@ async def get_main_menu_keyboard(user_id):
 
 async def update_main_message(user_id, items=None):
     """Обновляет главное сообщение пользователя"""
-    criteria = get_user_criteria(user_id)
-    
-    # Формируем текст сообщения
-    msg = "🏠 <b>ГЛАВНОЕ МЕНЮ МОНИТОРИНГА</b>\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━\n\n"
-    
-    # Список критериев
-    if criteria:
-        msg += "📋 <b>Активные критерии:</b>\n"
-        for cid, keyword, dev in criteria:
-            msg += f"   • <b>{keyword}</b> (отклонение: {dev}%)\n"
-    else:
-        msg += "📭 <b>Нет активных критериев</b>\n"
-        msg += "   Добавь первый через кнопку ниже\n"
-    
-    msg += "\n━━━━━━━━━━━━━━━━━━━━━\n"
-    
-    # Список найденных товаров
-    if items:
-        msg += f"📦 <b>Найдено товаров:</b> {len(items)}\n\n"
+    try:
+        criteria = get_user_criteria(user_id)
         
-        # Показываем первые 7 товаров
-        for i, item in enumerate(items[:7], 1):
-            msg += f"<b>{i}.</b> {item['title'][:40]}\n"
-            msg += f"   💰 {item['price']} ¥ | {item['usd']}$ | {item['rub']}₽\n"
-            msg += f"   📊 Откл: {item['deviation']}% | 🌐 {item['site']}\n"
-            msg += f"   🔗 <a href='{item['url']}'>Ссылка</a>\n"
-            msg += "   ─────────────────\n"
+        # Формируем текст сообщения
+        msg = "🏠 <b>ГЛАВНОЕ МЕНЮ МОНИТОРИНГА</b>\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━\n\n"
         
-        if len(items) > 7:
-            msg += f"\n⚠️ Показано 7 из {len(items)} товаров"
-    else:
-        msg += "😴 <b>Новых товаров пока нет</b>\n"
-        msg += "   Ожидай появления...\n"
-    
-    msg += f"\n🕒 <i>Обновлено: {datetime.now().strftime('%H:%M:%S')}</i>"
-    
-    # Получаем клавиатуру
-    keyboard = await get_main_menu_keyboard(user_id)
-    
-    # Отправляем или обновляем сообщение
-    if user_id in user_main_message:
+        # Список критериев
+        if criteria:
+            msg += "📋 <b>Активные критерии:</b>\n"
+            for cid, keyword, dev in criteria:
+                msg += f"   • <b>{keyword}</b> (отклонение: {dev}%)\n"
+        else:
+            msg += "📭 <b>Нет активных критериев</b>\n"
+            msg += "   Добавь первый через кнопку ниже\n"
+        
+        msg += "\n━━━━━━━━━━━━━━━━━━━━━\n"
+        
+        # Список найденных товаров
+        if items and len(items) > 0:
+            msg += f"📦 <b>Найдено товаров:</b> {len(items)}\n\n"
+            
+            # Показываем первые 7 товаров
+            for i, item in enumerate(items[:7], 1):
+                msg += f"<b>{i}.</b> {item['title'][:40]}\n"
+                msg += f"   💰 {item['price']} ¥ | {item['usd']}$ | {item['rub']}₽\n"
+                msg += f"   📊 Откл: {item['deviation']}% | 🌐 {item['site']}\n"
+                msg += f"   🔗 <a href='{item['url']}'>Ссылка</a>\n"
+                msg += "   ─────────────────\n"
+            
+            if len(items) > 7:
+                msg += f"\n⚠️ Показано 7 из {len(items)} товаров"
+        else:
+            msg += "😴 <b>Новых товаров пока нет</b>\n"
+            msg += "   Ожидай появления...\n"
+        
+        msg += f"\n🕒 <i>Обновлено: {datetime.now().strftime('%H:%M:%S')}</i>"
+        
+        # Получаем клавиатуру
+        keyboard = await get_main_menu_keyboard(user_id)
+        
+        # Отправляем или обновляем сообщение
+        if user_id in user_main_message and user_main_message[user_id]:
+            try:
+                await bot.edit_message_text(
+                    msg,
+                    chat_id=user_id,
+                    message_id=user_main_message[user_id],
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True
+                )
+                logger.info(f"Сообщение обновлено для {user_id}")
+                return
+            except Exception as e:
+                logger.warning(f"Не удалось обновить сообщение: {e}")
+                # Удаляем старый ID
+                user_main_message[user_id] = None
+        
+        # Отправляем новое сообщение
         try:
-            await bot.edit_message_text(
+            msg_obj = await bot.send_message(
+                user_id,
                 msg,
-                chat_id=user_id,
-                message_id=user_main_message[user_id],
                 parse_mode="HTML",
                 reply_markup=keyboard,
                 disable_web_page_preview=True
             )
+            user_main_message[user_id] = msg_obj.message_id
+            logger.info(f"Новое сообщение отправлено для {user_id}")
+            
+            # Пытаемся закрепить сообщение
+            try:
+                await bot.pin_chat_message(user_id, msg_obj.message_id)
+                logger.info(f"Сообщение закреплено для {user_id}")
+            except Exception as e:
+                logger.warning(f"Не удалось закрепить сообщение: {e}")
+                
         except Exception as e:
-            # Если не удалось обновить (сообщение удалено), отправляем новое
-            logging.warning(f"Не удалось обновить сообщение: {e}")
-            del user_main_message[user_id]
-            await send_new_main_message(user_id, msg, keyboard)
-    else:
-        await send_new_main_message(user_id, msg, keyboard)
-
-async def send_new_main_message(user_id, msg, keyboard):
-    """Отправляет новое главное сообщение"""
-    try:
-        msg_obj = await bot.send_message(
-            user_id,
-            msg,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-            disable_web_page_preview=True
-        )
-        user_main_message[user_id] = msg_obj.message_id
-        
-        # Пытаемся закрепить сообщение
-        try:
-            await bot.pin_chat_message(user_id, msg_obj.message_id)
-        except Exception as e:
-            logging.warning(f"Не удалось закрепить сообщение: {e}")
+            logger.error(f"Ошибка отправки сообщения: {e}")
             
     except Exception as e:
-        logging.error(f"Ошибка отправки главного сообщения: {e}")
+        logger.error(f"Ошибка update_main_message: {e}")
+        logger.error(traceback.format_exc())
 
 async def monitor_task():
     """Фоновый мониторинг"""
-    await bot.send_message(ADMIN_ID, "🚀 Бот запущен и начал мониторинг!")
+    try:
+        await bot.send_message(ADMIN_ID, "🚀 Бот запущен и начал мониторинг!")
+        logger.info("Мониторинг запущен")
+    except Exception as e:
+        logger.error(f"Не удалось отправить уведомление админу: {e}")
     
     while True:
         try:
+            logger.info("Начинаю проверку...")
             await update_currency()
             users = get_all_active_users()
+            logger.info(f"Активных пользователей: {len(users)}")
             
             for user_id in users:
-                criteria_list = get_user_criteria(user_id)
-                if not criteria_list:
-                    # Если нет критериев, показываем пустое меню
-                    await update_main_message(user_id)
-                    continue
-                
-                all_items = []
-                
-                for crit_id, keyword, deviation in criteria_list:
-                    items = await fetch_items_for_keyword(keyword)
+                try:
+                    criteria_list = get_user_criteria(user_id)
+                    if not criteria_list:
+                        # Если нет критериев, показываем пустое меню
+                        await update_main_message(user_id)
+                        continue
                     
-                    for item in items:
-                        avg_price = get_average_price(keyword, item['site'])
-                        save_price_cache(keyword, item['site'], item['price_cny'], item['url'], item['title'])
+                    all_items = []
+                    
+                    for crit_id, keyword, deviation in criteria_list:
+                        logger.info(f"Парсинг для {user_id}: {keyword}")
+                        items = await fetch_items_for_keyword(keyword)
+                        logger.info(f"Найдено {len(items)} товаров для {keyword}")
                         
-                        if not check_deviation(item['price_cny'], avg_price, deviation):
-                            continue
-                        
-                        usd, rub = convert_price(item['price_cny'])
-                        
-                        if avg_price and avg_price > 0:
-                            dev_percent = round(((item['price_cny'] - avg_price) / avg_price) * 100, 1)
-                        else:
-                            dev_percent = 0
-                        
-                        all_items.append({
-                            "title": item['title'],
-                            "price": item['price_cny'],
-                            "usd": usd,
-                            "rub": rub,
-                            "url": item['url'],
-                            "site": item['site'],
-                            "deviation": dev_percent,
-                            "keyword": keyword
-                        })
-                
-                # Сортируем по дате (новые сверху)
-                # Обновляем главное сообщение
-                await update_main_message(user_id, all_items)
+                        for item in items:
+                            avg_price = get_average_price(keyword, item['site'])
+                            save_price_cache(keyword, item['site'], item['price_cny'], item['url'], item['title'])
+                            
+                            if not check_deviation(item['price_cny'], avg_price, deviation):
+                                continue
+                            
+                            usd, rub = convert_price(item['price_cny'])
+                            
+                            if avg_price and avg_price > 0:
+                                dev_percent = round(((item['price_cny'] - avg_price) / avg_price) * 100, 1)
+                            else:
+                                dev_percent = 0
+                            
+                            all_items.append({
+                                "title": item['title'],
+                                "price": item['price_cny'],
+                                "usd": usd,
+                                "rub": rub,
+                                "url": item['url'],
+                                "site": item['site'],
+                                "deviation": dev_percent,
+                                "keyword": keyword
+                            })
+                    
+                    # Обновляем главное сообщение
+                    await update_main_message(user_id, all_items)
+                    
+                except Exception as e:
+                    logger.error(f"Ошибка для пользователя {user_id}: {e}")
+                    logger.error(traceback.format_exc())
             
+            logger.info(f"Проверка завершена. Следующая через {CHECK_INTERVAL} сек.")
             await asyncio.sleep(CHECK_INTERVAL)
             
         except Exception as e:
-            logging.error(f"Ошибка в мониторинге: {e}")
+            logger.error(f"Ошибка в мониторинге: {e}")
+            logger.error(traceback.format_exc())
             await asyncio.sleep(60)
 
 # --- Команды бота ---
@@ -247,21 +272,30 @@ async def monitor_task():
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
-    add_user(user_id, message.from_user.username or "", message.from_user.first_name or "")
+    logger.info(f"Команда /start от {user_id}")
     
-    # Отправляем приветствие
-    await message.answer(
-        "👋 Привет! Я создаю главное меню-интерфейс...\n"
-        "Оно будет закреплено сверху!"
-    )
-    
-    # Создаем главное меню
-    await update_main_message(user_id)
+    try:
+        # Добавляем пользователя
+        add_user(user_id, message.from_user.username or "", message.from_user.first_name or "")
+        
+        # Отправляем приветствие
+        await message.answer(
+            "👋 Привет! Создаю главное меню-интерфейс...\n"
+            "Оно будет закреплено сверху! ⭐"
+        )
+        
+        # Создаем главное меню
+        await update_main_message(user_id)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в start_cmd: {e}")
+        logger.error(traceback.format_exc())
+        await message.answer(f"❌ Ошибка: {str(e)}")
 
 @dp.message(Command("menu"))
 async def menu_cmd(message: types.Message):
-    """Команда для вызова меню"""
     user_id = message.from_user.id
+    logger.info(f"Команда /menu от {user_id}")
     await update_main_message(user_id)
 
 @dp.message(Command("admin"))
@@ -503,14 +537,23 @@ async def admin_del_user_by_id(message: types.Message):
 # --- Запуск бота ---
 
 async def main():
-    init_db()
-    add_user(ADMIN_ID, "admin", "Admin")
-    
-    # Запускаем мониторинг
-    asyncio.create_task(monitor_task())
-    
-    # Старт бота
-    await dp.start_polling(bot, skip_updates=True)
+    try:
+        logger.info("Инициализация базы данных...")
+        init_db()
+        add_user(ADMIN_ID, "admin", "Admin")
+        logger.info("База данных инициализирована")
+        
+        # Запускаем мониторинг
+        logger.info("Запуск мониторинга...")
+        asyncio.create_task(monitor_task())
+        
+        # Старт бота
+        logger.info("Бот запущен!")
+        await dp.start_polling(bot, skip_updates=True)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в main: {e}")
+        logger.error(traceback.format_exc())
 
 if __name__ == "__main__":
     asyncio.run(main())
