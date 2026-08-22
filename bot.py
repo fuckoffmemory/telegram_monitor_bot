@@ -16,21 +16,23 @@ from parser import fetch_items_for_keyword
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Проверка переменных
 print("🚀 Запуск бота...")
 print(f"BOT_TOKEN: {'✅ УСТАНОВЛЕН' if BOT_TOKEN and BOT_TOKEN != 'YOUR_BOT_TOKEN_HERE' else '❌ НЕ УСТАНОВЛЕН'}")
 print(f"ADMIN_ID: {'✅ УСТАНОВЛЕН' if ADMIN_ID else '❌ НЕ УСТАНОВЛЕН'}")
 
 if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
-    print("❌ ОШИБКА: BOT_TOKEN не настроен! Добавь переменную в Railway")
+    print("❌ ОШИБКА: BOT_TOKEN не настроен!")
     exit(1)
 
 if not ADMIN_ID:
-    print("❌ ОШИБКА: ADMIN_ID не настроен! Добавь переменную в Railway")
+    print("❌ ОШИБКА: ADMIN_ID не настроен!")
     exit(1)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# Кеш для сообщений пользователей (чтобы обновлять их)
+user_messages = {}
 
 # Кеш курсов валют
 currency_cache = {
@@ -53,7 +55,7 @@ async def update_currency():
             currency_cache["cny_to_usd"] = data["rates"].get("USD", 0.14)
             currency_cache["cny_to_rub"] = data["rates"].get("RUB", 12.5)
             currency_cache["last_update"] = now
-            logging.info(f"Курсы обновлены: USD={currency_cache['cny_to_usd']}, RUB={currency_cache['cny_to_rub']}")
+            logging.info(f"Курсы обновлены")
     except Exception as e:
         logging.error(f"Ошибка обновления курсов: {e}")
 
@@ -63,8 +65,11 @@ def convert_price(cny):
     rub = cny * currency_cache["cny_to_rub"]
     return round(usd, 2), round(rub, 2)
 
-def check_deviation(item_price, avg_price, user_deviation):
+def check_deviation(item_price, avg_price, user_deviation, show_all=False):
     """Проверяет отклонение цены"""
+    if show_all:  # Режим "Все товары"
+        return True
+    
     if avg_price is None or avg_price == 0:
         return True
     diff_percent = abs((item_price - avg_price) / avg_price) * 100
@@ -73,8 +78,37 @@ def check_deviation(item_price, avg_price, user_deviation):
     else:
         return diff_percent <= user_deviation
 
+async def send_or_update_message(user_id, text, keyboard=None):
+    """Отправляет новое сообщение или обновляет существующее"""
+    # Если у пользователя уже есть сообщение, обновляем его
+    if user_id in user_messages:
+        try:
+            await bot.edit_message_text(
+                text,
+                chat_id=user_id,
+                message_id=user_messages[user_id],
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                disable_web_page_preview=True
+            )
+            return
+        except Exception as e:
+            # Если не удалось обновить (сообщение удалено или изменилось), отправляем новое
+            logging.warning(f"Не удалось обновить сообщение: {e}")
+            del user_messages[user_id]
+    
+    # Отправляем новое сообщение
+    msg = await bot.send_message(
+        user_id,
+        text,
+        parse_mode="HTML",
+        reply_markup=keyboard,
+        disable_web_page_preview=True
+    )
+    user_messages[user_id] = msg.message_id
+
 async def monitor_task():
-    """Фоновый мониторинг"""
+    """Фоновый мониторинг с обновлением одного сообщения"""
     await bot.send_message(ADMIN_ID, "🚀 Бот запущен и начал мониторинг!")
     
     while True:
@@ -87,6 +121,8 @@ async def monitor_task():
                 if not criteria_list:
                     continue
                 
+                all_found_items = []
+                
                 for crit_id, keyword, deviation in criteria_list:
                     items = await fetch_items_for_keyword(keyword)
                     
@@ -94,6 +130,7 @@ async def monitor_task():
                         avg_price = get_average_price(keyword, item['site'])
                         save_price_cache(keyword, item['site'], item['price_cny'], item['url'], item['title'])
                         
+                        # Проверяем отклонение
                         if not check_deviation(item['price_cny'], avg_price, deviation):
                             continue
                         
@@ -104,28 +141,60 @@ async def monitor_task():
                         else:
                             dev_percent = 0
                         
-                        msg = (
-                            f"🔔 <b>Новый лот по запросу:</b> {keyword}\n"
-                            f"━━━━━━━━━━━━━━━━\n"
-                            f"📦 <b>{item['title']}</b>\n"
-                            f"🌐 <b>Сайт:</b> {item['site']}\n"
-                            f"💰 <b>Цена:</b>\n"
-                            f"   • {item['price_cny']} ¥ (CNY)\n"
-                            f"   • {usd} $\n"
-                            f"   • {rub} ₽\n"
-                            f"📊 <b>Отклонение от рынка:</b> {dev_percent}%\n"
-                            f"🔗 <a href='{item['url']}'>Ссылка на товар</a>\n"
-                            f"━━━━━━━━━━━━━━━━\n"
-                            f"🕒 {datetime.now().strftime('%H:%M:%S')}"
-                        )
-                        
-                        try:
-                            await bot.send_message(user_id, msg, parse_mode="HTML", disable_web_page_preview=True)
-                            logging.info(f"Отправлено уведомление пользователю {user_id} по {keyword}")
-                        except Exception as e:
-                            logging.error(f"Не удалось отправить пользователю {user_id}: {e}")
-                        
-                        await asyncio.sleep(1)
+                        all_found_items.append({
+                            "title": item['title'],
+                            "price": item['price_cny'],
+                            "usd": usd,
+                            "rub": rub,
+                            "url": item['url'],
+                            "site": item['site'],
+                            "deviation": dev_percent,
+                            "keyword": keyword
+                        })
+                
+                # Формируем одно сообщение со всеми товарами
+                if all_found_items:
+                    # Берем первые 10 товаров (чтобы не перегружать)
+                    items_to_show = all_found_items[:10]
+                    total_count = len(all_found_items)
+                    
+                    msg = f"🔄 <b>МОНИТОРИНГ ТОВАРОВ</b>\n"
+                    msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    msg += f"📦 Найдено новых: {total_count}\n"
+                    msg += f"🕒 {datetime.now().strftime('%H:%M:%S')}\n"
+                    msg += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    
+                    for i, item in enumerate(items_to_show, 1):
+                        msg += f"<b>{i}.</b> {item['title'][:60]}\n"
+                        msg += f"   🌐 {item['site']}\n"
+                        msg += f"   💰 {item['price']} ¥ | {item['usd']}$ | {item['rub']}₽\n"
+                        msg += f"   📊 Отклонение: {item['deviation']}%\n"
+                        msg += f"   🔗 <a href='{item['url']}'>Ссылка</a>\n"
+                        msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    
+                    if total_count > 10:
+                        msg += f"\n⚠️ Показано 10 из {total_count} товаров"
+                    
+                    # Кнопка "Обновить" для ручного обновления
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🔄 Обновить сейчас", callback_data="refresh")]
+                    ])
+                    
+                    await send_or_update_message(user_id, msg, keyboard)
+                else:
+                    # Если товаров нет - показываем это
+                    msg = f"🔄 <b>МОНИТОРИНГ ТОВАРОВ</b>\n"
+                    msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    msg += f"😴 Новых товаров нет\n"
+                    msg += f"🕒 {datetime.now().strftime('%H:%M:%S')}\n"
+                    msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    msg += f"\n💡 <i>Товары появятся здесь автоматически</i>"
+                    
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🔄 Обновить сейчас", callback_data="refresh")]
+                    ])
+                    
+                    await send_or_update_message(user_id, msg, keyboard)
             
             await asyncio.sleep(CHECK_INTERVAL)
             
@@ -143,14 +212,20 @@ async def start_cmd(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить критерий", callback_data="add_criteria")],
         [InlineKeyboardButton(text="📋 Мои критерии", callback_data="my_criteria")],
-        [InlineKeyboardButton(text="❌ Удалить критерий", callback_data="del_criteria")]
+        [InlineKeyboardButton(text="❌ Удалить критерий", callback_data="del_criteria")],
+        [InlineKeyboardButton(text="🧪 Тест парсера", callback_data="test_parser")],
+        [InlineKeyboardButton(text="📦 Все товары (без фильтра)", callback_data="show_all")]
     ])
     
     await message.answer(
         "👋 Привет! Я бот-мониторинг площадок Mercari и Goofish.\n\n"
-        "Добавь ключевое слово (например, 'Raf Simons') и укажи отклонение цены в %.\n"
-        "Я буду присылать тебе товары, которые соответствуют твоим критериям.",
-        reply_markup=keyboard
+        "📌 <b>Как использовать:</b>\n"
+        "• Добавь критерий: <code>Raf Simons 10</code>\n"
+        "• Я буду присылать ОДНО сообщение с ВСЕМИ товарами\n"
+        "• Сообщение будет обновляться автоматически\n\n"
+        "🧪 Нажми <b>'Тест парсера'</b> чтобы проверить работу",
+        reply_markup=keyboard,
+        parse_mode="HTML"
     )
 
 @dp.message(Command("admin"))
@@ -175,12 +250,115 @@ async def admin_panel(message: types.Message):
 
 # --- Callback обработчики ---
 
+@dp.callback_query(F.data == "refresh")
+async def refresh_callback(callback: CallbackQuery):
+    """Принудительное обновление"""
+    await callback.answer("🔄 Обновляю...")
+    # Просто удаляем кеш сообщения, чтобы оно пересоздалось
+    if callback.from_user.id in user_messages:
+        del user_messages[callback.from_user.id]
+    # Мониторинг обновится сам через CHECK_INTERVAL
+
+@dp.callback_query(F.data == "test_parser")
+async def test_parser_callback(callback: CallbackQuery):
+    """Тест парсера"""
+    await callback.answer("🧪 Тестирую парсер...")
+    
+    user_id = callback.from_user.id
+    
+    # Отправляем статус
+    status_msg = await bot.send_message(user_id, "🔍 Ищу товары по запросу 'Raf Simons'...")
+    
+    try:
+        # Делаем тестовый запрос
+        items = await fetch_items_for_keyword("Raf Simons")
+        
+        if items:
+            msg = f"✅ <b>Парсер работает!</b>\n"
+            msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"📦 Найдено товаров: {len(items)}\n\n"
+            
+            for i, item in enumerate(items[:5], 1):
+                msg += f"<b>{i}.</b> {item['title'][:50]}\n"
+                msg += f"   💰 {item['price_cny']} ¥\n"
+                msg += f"   🌐 {item['site']}\n"
+                msg += f"   🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
+            
+            if len(items) > 5:
+                msg += f"⚠️ Показано 5 из {len(items)} товаров"
+            
+            await status_msg.edit_text(msg, parse_mode="HTML", disable_web_page_preview=True)
+        else:
+            await status_msg.edit_text(
+                "❌ <b>Товары не найдены</b>\n\n"
+                "Возможные причины:\n"
+                "• Сайты блокируют запросы\n"
+                "• Нет товаров по запросу 'Raf Simons'\n"
+                "• Нужно обновить селекторы парсера",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        await status_msg.edit_text(
+            f"❌ <b>Ошибка парсера:</b>\n"
+            f"<code>{str(e)}</code>",
+            parse_mode="HTML"
+        )
+        logging.error(f"Ошибка теста парсера: {e}")
+
+@dp.callback_query(F.data == "show_all")
+async def show_all_callback(callback: CallbackQuery):
+    """Включает режим показа всех товаров без фильтрации"""
+    await callback.answer("📦 Показываю все товары...")
+    
+    user_id = callback.from_user.id
+    criteria = get_user_criteria(user_id)
+    
+    if not criteria:
+        await callback.message.answer("⚠️ Сначала добавь хотя бы один критерий для поиска.")
+        return
+    
+    # Показываем все товары без фильтрации
+    all_items = []
+    
+    for crit_id, keyword, deviation in criteria:
+        items = await fetch_items_for_keyword(keyword)
+        for item in items:
+            usd, rub = convert_price(item['price_cny'])
+            all_items.append({
+                "title": item['title'],
+                "price": item['price_cny'],
+                "usd": usd,
+                "rub": rub,
+                "url": item['url'],
+                "site": item['site'],
+                "keyword": keyword
+            })
+    
+    if all_items:
+        msg = f"📦 <b>ВСЕ ТОВАРЫ (без фильтрации)</b>\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"📦 Найдено: {len(all_items)}\n\n"
+        
+        for i, item in enumerate(all_items[:15], 1):
+            msg += f"<b>{i}.</b> {item['title'][:50]}\n"
+            msg += f"   💰 {item['price']} ¥ | {item['usd']}$ | {item['rub']}₽\n"
+            msg += f"   🌐 {item['site']} | 🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
+        
+        if len(all_items) > 15:
+            msg += f"⚠️ Показано 15 из {len(all_items)} товаров"
+        
+        await callback.message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        await callback.message.answer("😴 Товаров не найдено.")
+
 @dp.callback_query(F.data == "add_criteria")
 async def add_criteria_callback(callback: CallbackQuery):
     await callback.message.answer(
-        "✏️ Введи ключевое слово (например, 'Raf Simons') и через пробел отклонение в %.\n\n"
-        "Пример: <code>Raf Simons 10</code>\n"
-        "Если не указать отклонение, будет 10%.",
+        "✏️ Введи ключевое слово и через пробел отклонение в %.\n\n"
+        "Примеры:\n"
+        "<code>Raf Simons 10</code> - с отклонением 10%\n"
+        "<code>Raf Simons 0</code> - только точное совпадение\n"
+        "<code>Nike</code> - с отклонением 10% (по умолчанию)",
         parse_mode="HTML"
     )
     await callback.answer()
@@ -227,6 +405,11 @@ async def confirm_del_criteria(callback: CallbackQuery):
     user_id = callback.from_user.id
     crit_id = int(callback.data.split("_")[2])
     remove_criteria(crit_id, user_id)
+    
+    # Удаляем кеш сообщения
+    if user_id in user_messages:
+        del user_messages[user_id]
+    
     await callback.message.answer("✅ Критерий удален.")
     await callback.answer()
 
@@ -292,11 +475,16 @@ async def handle_text(message: types.Message):
             return
         
         add_criteria(user_id, keyword, deviation)
+        
+        # Удаляем кеш сообщения, чтобы обновилось
+        if user_id in user_messages:
+            del user_messages[user_id]
+        
         await message.answer(
             f"✅ Критерий добавлен!\n"
             f"📌 Слово: <b>{keyword}</b>\n"
             f"📊 Отклонение: <b>{deviation}%</b>\n\n"
-            f"Я начну присылать тебе товары по этому запросу.",
+            f"Скоро появится первое уведомление.",
             parse_mode="HTML"
         )
 
@@ -325,10 +513,7 @@ async def admin_del_user_by_id(message: types.Message):
 # --- Запуск бота ---
 
 async def main():
-    # Инициализация БД
     init_db()
-    
-    # Добавляем админа
     add_user(ADMIN_ID, "admin", "Admin")
     
     # Запускаем мониторинг
