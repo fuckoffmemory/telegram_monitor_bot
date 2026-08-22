@@ -12,7 +12,7 @@ import traceback
 
 from config import ADMIN_ID, BOT_TOKEN, CHECK_INTERVAL
 from database import *
-from parser import fetch_items_for_keyword
+from parser import fetch_items_for_keyword, fetch_latest_items
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +28,6 @@ dp = Dispatcher()
 
 user_main_message = {}
 user_notify_interval = {}
-user_temp_data = {}
 
 currency_cache = {
     "cny_to_usd": 0.14,
@@ -48,8 +47,9 @@ async def update_currency():
             currency_cache["cny_to_usd"] = data["rates"].get("USD", 0.14)
             currency_cache["cny_to_rub"] = data["rates"].get("RUB", 12.5)
             currency_cache["last_update"] = now
-    except:
-        pass
+            logger.info("Курсы обновлены")
+    except Exception as e:
+        logger.error(f"Ошибка курсов: {e}")
 
 def convert_price(cny):
     usd = cny * currency_cache["cny_to_usd"]
@@ -87,7 +87,7 @@ async def get_keyboard(user_id):
 
 # ==================== ГЛАВНОЕ СООБЩЕНИЕ ====================
 
-async def update_main(user_id, items=None, last10=False):
+async def update_main(user_id, items=None, last10=False, loading=False):
     try:
         criteria = get_user_criteria(user_id)
         interval = user_notify_interval.get(user_id, 60)
@@ -106,12 +106,34 @@ async def update_main(user_id, items=None, last10=False):
         msg += f"⏱ Интервал: {interval} сек\n"
         msg += "─────────────────\n\n"
         
-        if last10 and items:
-            msg += "📊 <b>ПОСЛЕДНИЕ 10</b>\n\n"
-            for i, item in enumerate(items[:10], 1):
-                msg += f"{i}. {item['title'][:40]}\n"
-                msg += f"   💰 {item['price_rub']}₽\n"
-                msg += f"   🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
+        if loading:
+            msg += "⏳ <b>Загрузка последних товаров...</b>\n"
+            msg += "Пожалуйста, подожди 10-15 секунд\n"
+        
+        elif last10 and items:
+            msg += "📊 <b>ПОСЛЕДНИЕ 10 ТОВАРОВ</b>\n"
+            msg += "(с сайтов в реальном времени)\n\n"
+            
+            # Группируем по сайтам
+            mercari_items = [i for i in items if i['site'] == 'mercari']
+            goofish_items = [i for i in items if i['site'] == 'goofish']
+            
+            if mercari_items:
+                msg += "🟢 <b>Mercari:</b>\n"
+                for i, item in enumerate(mercari_items[:5], 1):
+                    msg += f"  {i}. {item['title'][:35]}\n"
+                    msg += f"     💰 {item['price_rub']}₽ | {item['price_cny']}¥\n"
+                    msg += f"     🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
+            
+            if goofish_items:
+                msg += "🔵 <b>Goofish:</b>\n"
+                for i, item in enumerate(goofish_items[:5], 1):
+                    msg += f"  {i}. {item['title'][:35]}\n"
+                    msg += f"     💰 {item['price_rub']}₽ | {item['price_cny']}¥\n"
+                    msg += f"     🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
+            
+            msg += "─────────────────\n"
+            msg += "🔄 Нажми 'Обновить' для возврата"
         
         elif items and len(items) > 0 and not last10:
             msg += f"📦 <b>НАЙДЕНО:</b> {len(items)}\n\n"
@@ -129,7 +151,6 @@ async def update_main(user_id, items=None, last10=False):
         
         keyboard = await get_keyboard(user_id)
         
-        # Обновляем или создаём
         if user_id in user_main_message:
             try:
                 await bot.edit_message_text(
@@ -145,7 +166,6 @@ async def update_main(user_id, items=None, last10=False):
                 logger.warning(f"Edit failed: {e}")
                 user_main_message[user_id] = None
         
-        # Создаём новое
         msg_obj = await bot.send_message(
             user_id,
             msg,
@@ -162,8 +182,9 @@ async def update_main(user_id, items=None, last10=False):
             
     except Exception as e:
         logger.error(f"update_main error: {e}")
+        logger.error(traceback.format_exc())
 
-# ==================== УВЕДОМЛЕНИЯ (ОТДЕЛЬНЫЕ СООБЩЕНИЯ) ====================
+# ==================== УВЕДОМЛЕНИЯ ====================
 
 last_notify_time = {}
 
@@ -234,7 +255,6 @@ async def monitor():
                         
                         await asyncio.sleep(0.3)
                 
-                # Обновляем меню
                 await update_main(user_id, all_items)
             
             await asyncio.sleep(CHECK_INTERVAL)
@@ -242,6 +262,27 @@ async def monitor():
         except Exception as e:
             logger.error(f"monitor error: {e}")
             await asyncio.sleep(60)
+
+# ==================== ФУНКЦИЯ ДЛЯ "ПОСЛЕДНИХ 10" ====================
+
+async def fetch_last_10():
+    """Парсит последние товары с сайтов в реальном времени"""
+    all_items = []
+    
+    # Парсим главные страницы (без ключевых слов)
+    try:
+        mercari_items = await fetch_latest_items('mercari')
+        all_items.extend(mercari_items[:5])
+    except Exception as e:
+        logger.error(f"Mercari latest error: {e}")
+    
+    try:
+        goofish_items = await fetch_latest_items('goofish')
+        all_items.extend(goofish_items[:5])
+    except Exception as e:
+        logger.error(f"Goofish latest error: {e}")
+    
+    return all_items
 
 # ==================== КОМАНДЫ ====================
 
@@ -281,23 +322,32 @@ async def refresh_cb(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "add_filter")
 async def add_filter_cb(callback: CallbackQuery):
-    # Отвечаем в том же сообщении (не отправляем новое)
     await callback.answer("📝 Напиши в чат: Nike 5000")
 
 @dp.callback_query(F.data == "last10")
 async def last10_cb(callback: CallbackQuery):
-    await callback.answer("📊")
     user_id = callback.from_user.id
     
-    all_items = []
-    for site in ['mercari', 'goofish']:
-        items = get_last_items(site, 5)
-        all_items.extend(items)
+    # Показываем загрузку
+    await callback.answer("⏳ Загружаю последние товары...")
+    await update_main(user_id, loading=True)
     
-    if all_items:
-        await update_main(user_id, all_items, last10=True)
-    else:
-        # Показываем в главном сообщении, что нет товаров
+    try:
+        # Парсим в реальном времени
+        items = await fetch_last_10()
+        
+        if items:
+            # Конвертируем цены в рубли
+            for item in items:
+                usd, rub = convert_price(item['price_cny'])
+                item['price_rub'] = rub
+            
+            await update_main(user_id, items, last10=True)
+        else:
+            await update_main(user_id)
+            
+    except Exception as e:
+        logger.error(f"last10 error: {e}")
         await update_main(user_id)
 
 @dp.callback_query(F.data == "interval")
@@ -317,7 +367,7 @@ async def admin_add_cb(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("⛔")
         return
-    await callback.message.answer("Введи ID:")
+    await callback.message.answer("Введи ID пользователя:")
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_del")
@@ -344,11 +394,28 @@ async def handle_text(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
     
+    # Проверяем, не является ли сообщение от админа для добавления пользователя
+    if message.from_user.id == ADMIN_ID:
+        # Добавление пользователя по ID
+        if text.isdigit():
+            user_id_to_add = int(text)
+            add_user(user_id_to_add)
+            await message.answer(f"✅ Пользователь {user_id_to_add} добавлен!")
+            return
+        
+        # Удаление пользователя
+        if text.startswith('del_') and text[4:].isdigit():
+            user_id_to_del = int(text[4:])
+            remove_user(user_id_to_del)
+            await message.answer(f"✅ Пользователь {user_id_to_del} удален!")
+            return
+    
     # Интервал
     if text.isdigit() and len(text) <= 4:
         interval = int(text)
         if 10 <= interval <= 3600:
             user_notify_interval[user_id] = interval
+            await message.answer(f"✅ Интервал: {interval} сек")
             await update_main(user_id)
             return
     
@@ -360,42 +427,35 @@ async def handle_text(message: types.Message):
             keyword = " ".join(parts[:-1])
             
             if len(keyword) < 2:
+                await message.answer("⚠️ Слишком короткое слово")
                 return
             
             if max_price <= 0:
+                await message.answer("⚠️ Цена должна быть больше 0")
                 return
             
             add_criteria(user_id, keyword, max_price)
+            await message.answer(f"✅ Добавлено: {keyword} (до {max_price}₽)")
             await update_main(user_id)
             return
         except:
             pass
 
-# ==================== АДМИН ====================
-
-@dp.message(F.text.regexp(r'^\d+$'))
-async def admin_add_by_id(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    user_id = int(message.text)
-    add_user(user_id)
-    await message.answer(f"✅ {user_id} добавлен")
-
-@dp.message(F.text.regexp(r'^del_\d+$'))
-async def admin_del_by_id(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    user_id = int(message.text.split('_')[1])
-    remove_user(user_id)
-    await message.answer(f"✅ {user_id} удален")
-
 # ==================== ЗАПУСК ====================
 
 async def main():
-    init_db()
-    add_user(ADMIN_ID, "admin", "Admin")
-    asyncio.create_task(monitor())
-    await dp.start_polling(bot, skip_updates=True)
+    try:
+        init_db()
+        add_user(ADMIN_ID, "admin", "Admin")
+        logger.info("База данных готова")
+        
+        asyncio.create_task(monitor())
+        logger.info("Мониторинг запущен")
+        
+        await dp.start_polling(bot, skip_updates=True)
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     asyncio.run(main())
