@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import requests
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def random_delay(min_sec=0.5, max_sec=2):
     """Случайная задержка"""
@@ -50,10 +51,12 @@ def get_random_headers():
         'Cache-Control': 'max-age=0',
     }
 
+# ==================== ПАРСИНГ ПО КЛЮЧЕВОМУ СЛОВУ ====================
+
 async def parse_mercari(keyword):
-    """Парсинг Mercari"""
+    """Парсинг Mercari по ключевому слову"""
     items = []
-    logging.info(f"🔍 Парсинг Mercari: {keyword}")
+    logger.info(f"🔍 Парсинг Mercari: {keyword}")
     
     try:
         search_url = f"https://jp.mercari.com/search?keyword={keyword.replace(' ', '%20')}"
@@ -143,25 +146,25 @@ async def parse_mercari(keyword):
                         "site": "mercari"
                     })
                     
-                    logging.info(f"✅ Mercari: {title[:30]}... - {price} ¥")
+                    logger.info(f"✅ Mercari: {title[:30]}... - {price} ¥")
                     
                 except Exception as e:
-                    logging.error(f"Ошибка карточки Mercari: {e}")
+                    logger.error(f"Ошибка карточки Mercari: {e}")
                     continue
             
-            logging.info(f"📊 Mercari: найдено {len(items)} товаров")
+            logger.info(f"📊 Mercari: найдено {len(items)} товаров")
         else:
-            logging.error(f"Mercari ошибка: {response.status_code}")
+            logger.error(f"Mercari ошибка: {response.status_code}")
             
     except Exception as e:
-        logging.error(f"Ошибка Mercari: {e}")
+        logger.error(f"Ошибка Mercari: {e}")
     
     return items
 
 async def parse_goofish(keyword):
-    """Парсинг Goofish"""
+    """Парсинг Goofish по ключевому слову"""
     items = []
-    logging.info(f"🔍 Парсинг Goofish: {keyword}")
+    logger.info(f"🔍 Парсинг Goofish: {keyword}")
     
     try:
         search_url = f"https://www.goofish.com/search?q={keyword.replace(' ', '+')}"
@@ -253,25 +256,27 @@ async def parse_goofish(keyword):
                         "site": "goofish"
                     })
                     
-                    logging.info(f"✅ Goofish: {title[:30]}... - {price} ¥")
+                    logger.info(f"✅ Goofish: {title[:30]}... - {price} ¥")
                     
                 except Exception as e:
-                    logging.error(f"Ошибка карточки Goofish: {e}")
+                    logger.error(f"Ошибка карточки Goofish: {e}")
                     continue
             
-            logging.info(f"📊 Goofish: найдено {len(items)} товаров")
+            logger.info(f"📊 Goofish: найдено {len(items)} товаров")
         else:
-            logging.error(f"Goofish ошибка: {response.status_code}")
+            logger.error(f"Goofish ошибка: {response.status_code}")
             
     except Exception as e:
-        logging.error(f"Ошибка Goofish: {e}")
+        logger.error(f"Ошибка Goofish: {e}")
     
     return items
 
+# ==================== ГЛАВНАЯ ФУНКЦИЯ ПОИСКА ====================
+
 async def fetch_items_for_keyword(keyword):
-    """Главная функция - собирает товары со всех сайтов"""
+    """Главная функция - собирает товары со всех сайтов по ключевому слову"""
     keyword = keyword.strip().lower()
-    logging.info(f"🚀 Поиск: {keyword}")
+    logger.info(f"🚀 Поиск: {keyword}")
     
     mercari_task = asyncio.create_task(parse_mercari(keyword))
     goofish_task = asyncio.create_task(parse_goofish(keyword))
@@ -281,5 +286,159 @@ async def fetch_items_for_keyword(keyword):
     
     all_items = mercari_items + goofish_items
     
-    logging.info(f"📊 ИТОГО: {len(all_items)} товаров")
+    logger.info(f"📊 ИТОГО: {len(all_items)} товаров")
     return all_items
+
+# ==================== НОВАЯ ФУНКЦИЯ: ПОСЛЕДНИЕ ТОВАРЫ С ГЛАВНЫХ СТРАНИЦ ====================
+
+async def fetch_latest_items(site):
+    """Парсит последние товары с главной страницы сайта (без ключевого слова)"""
+    items = []
+    
+    try:
+        if site == 'mercari':
+            url = "https://jp.mercari.com/"
+            headers = get_random_headers()
+            headers.update({
+                'Referer': 'https://jp.mercari.com/',
+                'Origin': 'https://jp.mercari.com',
+            })
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            logger.info(f"Mercari главная статус: {response.status_code}")
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                cards = soup.find_all('a', href=re.compile(r'/item/'))
+                logger.info(f"Mercari главная найдено карточек: {len(cards)}")
+                
+                for card in cards[:5]:
+                    try:
+                        price = None
+                        price_elem = card.select_one('.price, .item-price, .number')
+                        if price_elem:
+                            price = clean_price(price_elem.text.strip())
+                        
+                        if not price:
+                            card_text = card.text
+                            price_match = re.search(r'¥\s*([\d,]+\.?\d*)', card_text)
+                            if price_match:
+                                price = clean_price(price_match.group(1))
+                        
+                        if not price:
+                            continue
+                        
+                        title_elem = card.select_one('.item-name, .title, .name')
+                        title = title_elem.text.strip() if title_elem else "Товар"
+                        
+                        if not title:
+                            img = card.select_one('img')
+                            if img and img.get('alt'):
+                                title = img.get('alt')
+                        
+                        if not title:
+                            title = "Товар"
+                        
+                        url_card = card.get('href')
+                        if url_card and not url_card.startswith('http'):
+                            url_card = f"https://jp.mercari.com{url_card}"
+                        
+                        items.append({
+                            "title": title[:100],
+                            "price_cny": price,
+                            "url": url_card,
+                            "site": "mercari"
+                        })
+                        logger.info(f"✅ Mercari главная: {title[:30]}... - {price} ¥")
+                    except Exception as e:
+                        logger.error(f"Ошибка карточки Mercari главная: {e}")
+                        continue
+        
+        elif site == 'goofish':
+            url = "https://www.goofish.com/"
+            headers = get_random_headers()
+            headers.update({
+                'Referer': 'https://www.goofish.com/',
+                'Origin': 'https://www.goofish.com',
+            })
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            logger.info(f"Goofish главная статус: {response.status_code}")
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                cards = soup.find_all('a', href=re.compile(r'/item/'))
+                logger.info(f"Goofish главная найдено карточек: {len(cards)}")
+                
+                for card in cards[:5]:
+                    try:
+                        price = None
+                        price_elem = card.select_one('.price, .item-price, .sale-price')
+                        if price_elem:
+                            price = clean_price(price_elem.text.strip())
+                        
+                        if not price:
+                            card_text = card.text
+                            price_match = re.search(r'([\d,]+\.?\d*)\s*元', card_text)
+                            if price_match:
+                                price = clean_price(price_match.group(1))
+                        
+                        if not price:
+                            continue
+                        
+                        title_elem = card.select_one('.title, .item-title, .name')
+                        title = title_elem.text.strip() if title_elem else "Товар"
+                        
+                        if not title:
+                            img = card.select_one('img')
+                            if img and img.get('alt'):
+                                title = img.get('alt')
+                        
+                        if not title:
+                            title = "Товар"
+                        
+                        url_card = card.get('href')
+                        if url_card and not url_card.startswith('http'):
+                            url_card = f"https://www.goofish.com{url_card}"
+                        
+                        items.append({
+                            "title": title[:100],
+                            "price_cny": price,
+                            "url": url_card,
+                            "site": "goofish"
+                        })
+                        logger.info(f"✅ Goofish главная: {title[:30]}... - {price} ¥")
+                    except Exception as e:
+                        logger.error(f"Ошибка карточки Goofish главная: {e}")
+                        continue
+    
+    except Exception as e:
+        logger.error(f"fetch_latest_items error: {e}")
+    
+    return items
+
+# ==================== ТЕСТ ====================
+
+async def test_parser():
+    """Тестирование парсера"""
+    print("🧪 Тестируем парсер...")
+    
+    keyword = "Raf Simons"
+    items = await fetch_items_for_keyword(keyword)
+    
+    print(f"\n📦 Найдено {len(items)} товаров:")
+    for i, item in enumerate(items[:5], 1):
+        print(f"{i}. {item['title']}")
+        print(f"   Цена: {item['price_cny']} ¥")
+        print(f"   Сайт: {item['site']}")
+        print(f"   Ссылка: {item['url']}")
+        print()
+    
+    print("\n🧪 Тестируем 'Последние 10'...")
+    latest = await fetch_latest_items('mercari')
+    print(f"Последние с Mercari: {len(latest)}")
+    for item in latest:
+        print(f"  - {item['title'][:30]}... {item['price_cny']}¥")
+
+if __name__ == "__main__":
+    asyncio.run(test_parser())
