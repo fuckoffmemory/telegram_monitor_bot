@@ -1,51 +1,33 @@
 import asyncio
-import subprocess
-import sys
 import os
-import time
+import sys
 
-print("🚀 Запуск бота на Railway...")
-print(f"Python версия: {sys.version}")
-
-def install_playwright():
-    """Установка Playwright с обработкой ошибок"""
-    try:
-        print("📦 Установка Playwright браузеров...")
-        
-        # Устанавливаем playwright
-        subprocess.run([sys.executable, "-m", "pip", "install", "playwright"], check=True)
-        
-        # Устанавливаем браузеры в home директорию
-        home = os.path.expanduser("~")
-        browsers_path = os.path.join(home, ".cache", "ms-playwright")
-        os.makedirs(browsers_path, exist_ok=True)
-        
-        # Устанавливаем chromium
-        subprocess.run([
-            sys.executable, "-m", "playwright", "install", 
-            "chromium", 
-            "--path", browsers_path
-        ], check=True, capture_output=True)
-        
-        print("✅ Playwright успешно установлен!")
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка установки Playwright: {e}")
-        return False
+print("🚀 Запуск бота...")
+print(f"Python: {sys.version}")
+print(f"Директория: {os.getcwd()}")
 
 async def main():
-    # Устанавливаем Playwright
-    if not install_playwright():
-        print("⚠️ Не удалось установить Playwright, пробуем альтернативный метод...")
-        # Пробуем без playwright (только requests)
-        os.environ["USE_REQUESTS"] = "1"
-    
-    # Импортируем и запускаем бота
     try:
+        token = os.getenv("BOT_TOKEN")
+        admin = os.getenv("ADMIN_ID")
+        
+        if not token:
+            print("❌ ОШИБКА: BOT_TOKEN не установлен!")
+            return
+        
+        if not admin:
+            print("❌ ОШИБКА: ADMIN_ID не установлен!")
+            return
+        
+        print(f"✅ BOT_TOKEN: {token[:10]}...")
+        print(f"✅ ADMIN_ID: {admin}")
+        
         from bot import main as bot_main
+        print("✅ Бот импортирован")
         await bot_main()
+        
     except Exception as e:
-        print(f"❌ Ошибка запуска бота: {e}")
+        print(f"❌ Ошибка: {e}")
         import traceback
         traceback.print_exc()
         raise
