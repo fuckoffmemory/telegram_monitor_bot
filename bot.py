@@ -28,6 +28,7 @@ dp = Dispatcher()
 
 user_main_message = {}
 user_notify_interval = {}
+user_temp_data = {}
 
 currency_cache = {
     "cny_to_usd": 0.14,
@@ -47,24 +48,22 @@ async def update_currency():
             currency_cache["cny_to_usd"] = data["rates"].get("USD", 0.14)
             currency_cache["cny_to_rub"] = data["rates"].get("RUB", 12.5)
             currency_cache["last_update"] = now
-            logger.info("Курсы обновлены")
-    except Exception as e:
-        logger.error(f"Ошибка курсов: {e}")
+    except:
+        pass
 
 def convert_price(cny):
     usd = cny * currency_cache["cny_to_usd"]
     rub = cny * currency_cache["cny_to_rub"]
     return round(usd, 2), round(rub, 2)
 
-# --- Клавиатура ---
+# ==================== КЛАВИАТУРА ====================
 
 async def get_keyboard(user_id):
     criteria = get_user_criteria(user_id)
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     
     keyboard.inline_keyboard.append([
-        InlineKeyboardButton(text="➕ Добавить фильтр", callback_data="add_criteria")
+        InlineKeyboardButton(text="➕ Добавить фильтр", callback_data="add_filter")
     ])
     
     for cid, keyword, max_price in criteria:
@@ -77,43 +76,44 @@ async def get_keyboard(user_id):
     
     keyboard.inline_keyboard.append([
         InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh"),
-        InlineKeyboardButton(text="📊 Последние 10", callback_data="last_10")
+        InlineKeyboardButton(text="📊 Последние 10", callback_data="last10")
     ])
     
     keyboard.inline_keyboard.append([
-        InlineKeyboardButton(text="⏱ Интервал", callback_data="set_interval")
+        InlineKeyboardButton(text="⏱ Интервал", callback_data="interval")
     ])
     
     return keyboard
 
-# --- Главное сообщение ---
+# ==================== ГЛАВНОЕ СООБЩЕНИЕ ====================
 
-async def update_main(user_id, items=None, last_10=False):
+async def update_main(user_id, items=None, last10=False):
     try:
         criteria = get_user_criteria(user_id)
         interval = user_notify_interval.get(user_id, 60)
         
-        msg = "🏠 <b>МЕНЮ МОНИТОРИНГА</b>\n\n"
+        msg = "🏠 <b>МЕНЮ МОНИТОРИНГА</b>\n"
+        msg += "─────────────────\n\n"
         
         if criteria:
             msg += "📋 <b>Фильтры:</b>\n"
             for cid, keyword, max_price in criteria:
                 msg += f"• {keyword} (до {max_price}₽)\n"
         else:
-            msg += "📭 Нет фильтров\n"
-            msg += "Напиши: Nike 5000\n\n"
+            msg += "📭 <b>Нет фильтров</b>\n"
+            msg += "Напиши: <code>Nike 5000</code>\n\n"
         
         msg += f"⏱ Интервал: {interval} сек\n"
-        msg += "\n"
+        msg += "─────────────────\n\n"
         
-        if last_10 and items:
+        if last10 and items:
             msg += "📊 <b>ПОСЛЕДНИЕ 10</b>\n\n"
             for i, item in enumerate(items[:10], 1):
                 msg += f"{i}. {item['title'][:40]}\n"
                 msg += f"   💰 {item['price_rub']}₽\n"
                 msg += f"   🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
         
-        elif items and len(items) > 0 and not last_10:
+        elif items and len(items) > 0 and not last10:
             msg += f"📦 <b>НАЙДЕНО:</b> {len(items)}\n\n"
             for i, item in enumerate(items[:10], 1):
                 msg += f"{i}. {item['title'][:40]}\n"
@@ -122,14 +122,15 @@ async def update_main(user_id, items=None, last_10=False):
             if len(items) > 10:
                 msg += f"⚠️ Показано 10 из {len(items)}\n"
         else:
-            msg += "😴 Товаров нет\n"
+            msg += "😴 <b>Товаров нет</b>\n"
+            msg += "Ожидай появления...\n"
         
         msg += f"\n🕒 {datetime.now().strftime('%H:%M:%S')}"
         
         keyboard = await get_keyboard(user_id)
         
-        # Пробуем обновить существующее сообщение
-        if user_id in user_main_message and user_main_message[user_id]:
+        # Обновляем или создаём
+        if user_id in user_main_message:
             try:
                 await bot.edit_message_text(
                     msg,
@@ -141,33 +142,28 @@ async def update_main(user_id, items=None, last_10=False):
                 )
                 return
             except Exception as e:
-                logger.warning(f"Не удалось обновить: {e}")
+                logger.warning(f"Edit failed: {e}")
                 user_main_message[user_id] = None
         
-        # Отправляем новое сообщение
+        # Создаём новое
+        msg_obj = await bot.send_message(
+            user_id,
+            msg,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+            disable_web_page_preview=True
+        )
+        user_main_message[user_id] = msg_obj.message_id
+        
         try:
-            msg_obj = await bot.send_message(
-                user_id,
-                msg,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-                disable_web_page_preview=True
-            )
-            user_main_message[user_id] = msg_obj.message_id
-            
-            # Пытаемся закрепить (если не получится - просто игнорируем)
-            try:
-                await bot.pin_chat_message(user_id, msg_obj.message_id)
-            except Exception as e:
-                logger.warning(f"Не удалось закрепить: {e}")
-                
-        except Exception as e:
-            logger.error(f"Ошибка отправки: {e}")
+            await bot.pin_chat_message(user_id, msg_obj.message_id)
+        except:
+            pass
             
     except Exception as e:
-        logger.error(f"Ошибка update_main: {e}")
+        logger.error(f"update_main error: {e}")
 
-# --- Уведомления ---
+# ==================== УВЕДОМЛЕНИЯ (ОТДЕЛЬНЫЕ СООБЩЕНИЯ) ====================
 
 last_notify_time = {}
 
@@ -180,9 +176,8 @@ async def send_notification(user_id, item, keyword):
         if key in last_notify_time:
             return
         
-        if user_id in last_notify_time:
-            if now - last_notify_time[user_id] < interval:
-                return
+        if user_id in last_notify_time and now - last_notify_time[user_id] < interval:
+            return
         
         last_notify_time[user_id] = now
         last_notify_time[key] = now
@@ -190,24 +185,21 @@ async def send_notification(user_id, item, keyword):
         usd, rub = convert_price(item['price_cny'])
         
         msg = (
-            f"🔔 <b>НОВЫЙ ТОВАР</b>\n"
-            f"\n"
-            f"📦 {item['title'][:60]}\n"
-            f"\n"
+            f"🔔 <b>НОВЫЙ ТОВАР</b>\n\n"
+            f"📦 {item['title'][:60]}\n\n"
             f"💰 {item['price_cny']}¥ | {rub}₽ | {usd}$\n"
             f"🌐 {item['site']}\n"
-            f"🔗 <a href='{item['url']}'>Ссылка</a>\n"
-            f"\n"
+            f"🔗 <a href='{item['url']}'>Ссылка</a>\n\n"
             f"📌 Фильтр: {keyword}"
         )
         
         await bot.send_message(user_id, msg, parse_mode="HTML", disable_web_page_preview=True)
-        logger.info(f"Уведомление для {user_id}")
+        logger.info(f"Уведомление {user_id}: {keyword}")
         
     except Exception as e:
-        logger.error(f"Ошибка уведомления: {e}")
+        logger.error(f"send_notification error: {e}")
 
-# --- Мониторинг ---
+# ==================== МОНИТОРИНГ ====================
 
 async def monitor():
     while True:
@@ -218,6 +210,7 @@ async def monitor():
             for user_id in users:
                 criteria = get_user_criteria(user_id)
                 if not criteria:
+                    await update_main(user_id)
                     continue
                 
                 all_items = []
@@ -227,8 +220,6 @@ async def monitor():
                     
                     for item in items:
                         usd, rub = convert_price(item['price_cny'])
-                        
-                        # Сохраняем в кеш с ценой в рублях
                         save_price_cache(keyword, item['site'], item['price_cny'], item['url'], item['title'], rub)
                         
                         if rub <= max_price_rub:
@@ -243,17 +234,16 @@ async def monitor():
                         
                         await asyncio.sleep(0.3)
                 
-                # Обновляем меню с найденными товарами
-                if all_items:
-                    await update_main(user_id, all_items)
+                # Обновляем меню
+                await update_main(user_id, all_items)
             
             await asyncio.sleep(CHECK_INTERVAL)
             
         except Exception as e:
-            logger.error(f"Мониторинг: {e}")
+            logger.error(f"monitor error: {e}")
             await asyncio.sleep(60)
 
-# --- Команды ---
+# ==================== КОМАНДЫ ====================
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
@@ -282,24 +272,21 @@ async def admin_cmd(message: types.Message):
     ])
     await message.answer(f"👑 Админ-панель\nПользователей: {len(users)}", reply_markup=keyboard)
 
-# --- Callbacks ---
+# ==================== CALLBACK ====================
 
 @dp.callback_query(F.data == "refresh")
 async def refresh_cb(callback: CallbackQuery):
     await callback.answer("🔄")
     await update_main(callback.from_user.id)
 
-@dp.callback_query(F.data == "add_criteria")
-async def add_cb(callback: CallbackQuery):
-    await callback.message.answer(
-        "📝 Напиши в чат:\n"
-        "<code>Nike 5000</code> - искать Nike до 5000₽"
-    )
-    await callback.answer()
+@dp.callback_query(F.data == "add_filter")
+async def add_filter_cb(callback: CallbackQuery):
+    # Отвечаем в том же сообщении (не отправляем новое)
+    await callback.answer("📝 Напиши в чат: Nike 5000")
 
-@dp.callback_query(F.data == "last_10")
-async def last_10_cb(callback: CallbackQuery):
-    await callback.answer("📊 Загружаю...")
+@dp.callback_query(F.data == "last10")
+async def last10_cb(callback: CallbackQuery):
+    await callback.answer("📊")
     user_id = callback.from_user.id
     
     all_items = []
@@ -308,26 +295,21 @@ async def last_10_cb(callback: CallbackQuery):
         all_items.extend(items)
     
     if all_items:
-        await update_main(user_id, all_items, last_10=True)
+        await update_main(user_id, all_items, last10=True)
     else:
-        await callback.message.answer("😴 Нет сохраненных товаров")
+        # Показываем в главном сообщении, что нет товаров
+        await update_main(user_id)
 
-@dp.callback_query(F.data == "set_interval")
-async def set_interval_cb(callback: CallbackQuery):
-    await callback.message.answer(
-        f"⏱ Текущий интервал: {user_notify_interval.get(callback.from_user.id, 60)} сек\n\n"
-        "Напиши число в секундах:\n"
-        "60 - 1 минута\n"
-        "300 - 5 минут"
-    )
-    await callback.answer()
+@dp.callback_query(F.data == "interval")
+async def interval_cb(callback: CallbackQuery):
+    await callback.answer("⏱ Напиши число в чат (секунды)")
 
 @dp.callback_query(F.data.startswith("del_"))
 async def del_cb(callback: CallbackQuery):
     user_id = callback.from_user.id
     crit_id = int(callback.data.split("_")[1])
     remove_criteria(crit_id, user_id)
-    await callback.answer("✅ Удалено")
+    await callback.answer("✅")
     await update_main(user_id)
 
 @dp.callback_query(F.data == "admin_add")
@@ -335,7 +317,7 @@ async def admin_add_cb(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("⛔")
         return
-    await callback.message.answer("Введи ID пользователя:")
+    await callback.message.answer("Введи ID:")
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_del")
@@ -343,7 +325,7 @@ async def admin_del_cb(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("⛔")
         return
-    await callback.message.answer("Введи ID для удаления (del_123):")
+    await callback.message.answer("Введи del_123:")
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_list")
@@ -352,26 +334,25 @@ async def admin_list_cb(callback: CallbackQuery):
         await callback.answer("⛔")
         return
     users = get_all_active_users()
-    await callback.message.answer(f"👥 Пользователи:\n" + "\n".join([str(u) for u in users]))
+    await callback.message.answer("👥 Пользователи:\n" + "\n".join([str(u) for u in users]))
     await callback.answer()
 
-# --- Текст ---
+# ==================== ТЕКСТ ====================
 
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
     
-    # Установка интервала
+    # Интервал
     if text.isdigit() and len(text) <= 4:
         interval = int(text)
         if 10 <= interval <= 3600:
             user_notify_interval[user_id] = interval
-            await message.answer(f"✅ Интервал: {interval} сек")
             await update_main(user_id)
             return
     
-    # Добавление фильтра
+    # Добавление фильтра: "Nike 5000"
     parts = text.split()
     if len(parts) >= 2:
         try:
@@ -379,23 +360,18 @@ async def handle_text(message: types.Message):
             keyword = " ".join(parts[:-1])
             
             if len(keyword) < 2:
-                await message.answer("⚠️ Слишком короткое слово")
                 return
             
             if max_price <= 0:
-                await message.answer("⚠️ Цена должна быть > 0")
                 return
             
             add_criteria(user_id, keyword, max_price)
-            await message.answer(f"✅ Добавлено: {keyword} (до {max_price}₽)")
             await update_main(user_id)
             return
         except:
             pass
-    
-    await message.answer("⚠️ Используй: Nike 5000")
 
-# --- Админ ---
+# ==================== АДМИН ====================
 
 @dp.message(F.text.regexp(r'^\d+$'))
 async def admin_add_by_id(message: types.Message):
@@ -403,7 +379,7 @@ async def admin_add_by_id(message: types.Message):
         return
     user_id = int(message.text)
     add_user(user_id)
-    await message.answer(f"✅ Пользователь {user_id} добавлен")
+    await message.answer(f"✅ {user_id} добавлен")
 
 @dp.message(F.text.regexp(r'^del_\d+$'))
 async def admin_del_by_id(message: types.Message):
@@ -411,23 +387,15 @@ async def admin_del_by_id(message: types.Message):
         return
     user_id = int(message.text.split('_')[1])
     remove_user(user_id)
-    await message.answer(f"✅ Пользователь {user_id} удален")
+    await message.answer(f"✅ {user_id} удален")
 
-# --- Запуск ---
+# ==================== ЗАПУСК ====================
 
 async def main():
-    try:
-        init_db()
-        add_user(ADMIN_ID, "admin", "Admin")
-        logger.info("База данных готова")
-        
-        asyncio.create_task(monitor())
-        logger.info("Мониторинг запущен")
-        
-        await dp.start_polling(bot, skip_updates=True)
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        traceback.print_exc()
+    init_db()
+    add_user(ADMIN_ID, "admin", "Admin")
+    asyncio.create_task(monitor())
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
