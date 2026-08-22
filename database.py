@@ -1,6 +1,6 @@
 import sqlite3
 import os
-import json
+import time
 from config import DB_PATH
 
 def init_db():
@@ -17,12 +17,12 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # Таблица критериев пользователей
+    # Таблица критериев (с max_price в рублях)
     c.execute('''CREATE TABLE IF NOT EXISTS criteria (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         keyword TEXT,
-        price_deviation INTEGER DEFAULT 10,
+        max_price INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
     )''')
@@ -33,6 +33,7 @@ def init_db():
         keyword TEXT,
         site TEXT,
         price REAL,
+        price_rub REAL,
         timestamp INTEGER,
         url TEXT,
         title TEXT,
@@ -54,24 +55,19 @@ def init_db():
 # --- Функции для пользователей ---
 
 def add_user(user_id, username="", first_name=""):
-    """Добавляет или обновляет пользователя"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        
-        # Проверяем, существует ли пользователь
         c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
         exists = c.fetchone()
         
         if exists:
-            # Обновляем существующего
             c.execute("""
                 UPDATE users 
                 SET username = ?, first_name = ?, is_active = 1 
                 WHERE user_id = ?
             """, (username, first_name, user_id))
         else:
-            # Добавляем нового
             c.execute("""
                 INSERT INTO users (user_id, username, first_name, is_active) 
                 VALUES (?, ?, ?, 1)
@@ -85,7 +81,6 @@ def add_user(user_id, username="", first_name=""):
         return False
 
 def remove_user(user_id):
-    """Удаляет пользователя и все его критерии"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -99,7 +94,6 @@ def remove_user(user_id):
         return False
 
 def get_all_active_users():
-    """Получает всех активных пользователей"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -112,7 +106,6 @@ def get_all_active_users():
         return []
 
 def user_exists(user_id):
-    """Проверяет, существует ли пользователь"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -124,36 +117,10 @@ def user_exists(user_id):
         print(f"Ошибка проверки пользователя: {e}")
         return False
 
-def deactivate_user(user_id):
-    """Деактивирует пользователя (не удаляет)"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("UPDATE users SET is_active = 0 WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Ошибка деактивации пользователя: {e}")
-        return False
+# --- Функции для критериев (с max_price в рублях) ---
 
-def activate_user(user_id):
-    """Активирует пользователя"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("UPDATE users SET is_active = 1 WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Ошибка активации пользователя: {e}")
-        return False
-
-# --- Функции для критериев ---
-
-def add_criteria(user_id, keyword, deviation=10):
-    """Добавляет критерий для пользователя"""
+def add_criteria(user_id, keyword, max_price_rub):
+    """Добавляет критерий с максимальной ценой в рублях"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -170,15 +137,15 @@ def add_criteria(user_id, keyword, deviation=10):
             # Обновляем существующий
             c.execute("""
                 UPDATE criteria 
-                SET price_deviation = ? 
+                SET max_price = ? 
                 WHERE user_id = ? AND keyword = ?
-            """, (deviation, user_id, keyword.lower().strip()))
+            """, (max_price_rub, user_id, keyword.lower().strip()))
         else:
             # Добавляем новый
             c.execute("""
-                INSERT INTO criteria (user_id, keyword, price_deviation) 
+                INSERT INTO criteria (user_id, keyword, max_price) 
                 VALUES (?, ?, ?)
-            """, (user_id, keyword.lower().strip(), deviation))
+            """, (user_id, keyword.lower().strip(), max_price_rub))
         
         conn.commit()
         conn.close()
@@ -188,19 +155,19 @@ def add_criteria(user_id, keyword, deviation=10):
         return False
 
 def get_user_criteria(user_id):
-    """Получает все критерии пользователя"""
+    """Получает все критерии пользователя (id, keyword, max_price_rub)"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT id, keyword, price_deviation 
+            SELECT id, keyword, max_price 
             FROM criteria 
             WHERE user_id = ? 
             ORDER BY created_at DESC
         """, (user_id,))
         data = c.fetchall()
         conn.close()
-        return data  # [(id, keyword, deviation), ...]
+        return data  # [(id, keyword, max_price_rub), ...]
     except Exception as e:
         print(f"Ошибка получения критериев: {e}")
         return []
@@ -211,7 +178,7 @@ def get_all_criteria():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT u.user_id, u.username, c.keyword, c.price_deviation 
+            SELECT u.user_id, u.username, c.keyword, c.max_price 
             FROM criteria c 
             JOIN users u ON c.user_id = u.user_id 
             WHERE u.is_active = 1
@@ -225,7 +192,6 @@ def get_all_criteria():
         return []
 
 def remove_criteria(criteria_id, user_id):
-    """Удаляет критерий по ID"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -238,7 +204,6 @@ def remove_criteria(criteria_id, user_id):
         return False
 
 def remove_criteria_by_keyword(user_id, keyword):
-    """Удаляет критерий по ключевому слову"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -251,7 +216,6 @@ def remove_criteria_by_keyword(user_id, keyword):
         return False
 
 def get_criteria_count(user_id):
-    """Получает количество критериев у пользователя"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -263,23 +227,33 @@ def get_criteria_count(user_id):
         print(f"Ошибка подсчета критериев: {e}")
         return 0
 
-# --- Функции для кеша цен ---
+# --- Функции для кеша цен (с сохранением в рублях) ---
 
-def save_price_cache(keyword, site, price, url, title):
-    """Сохраняет цену в кеш"""
-    import time
+def save_price_cache(keyword, site, price_cny, url, title, price_rub=None):
+    """Сохраняет цену в кеш (в юанях и рублях)"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Удаляем старые записи (старше 24 часов)
-        c.execute("DELETE FROM price_cache WHERE timestamp < ?", (int(time.time()) - 86400,))
+        # Удаляем старые записи (старше 7 дней)
+        c.execute("DELETE FROM price_cache WHERE timestamp < ?", (int(time.time()) - 604800,))
         
-        # Сохраняем новую запись
+        # Если цена в рублях не передана, используем курс по умолчанию
+        if price_rub is None:
+            price_rub = price_cny * 12.5  # примерный курс
+        
         c.execute("""
-            INSERT OR REPLACE INTO price_cache (keyword, site, price, timestamp, url, title) 
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (keyword.lower().strip(), site, price, int(time.time()), url, title[:200]))
+            INSERT OR REPLACE INTO price_cache (keyword, site, price, price_rub, timestamp, url, title) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            keyword.lower().strip(), 
+            site, 
+            price_cny, 
+            price_rub, 
+            int(time.time()), 
+            url, 
+            title[:200]
+        ))
         
         conn.commit()
         conn.close()
@@ -287,8 +261,7 @@ def save_price_cache(keyword, site, price, url, title):
         print(f"Ошибка сохранения кеша цен: {e}")
 
 def get_average_price(keyword, site):
-    """Получает среднюю цену за последние 24 часа"""
-    import time
+    """Получает среднюю цену за последние 24 часа (в юанях)"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -303,14 +276,42 @@ def get_average_price(keyword, site):
         print(f"Ошибка получения средней цены: {e}")
         return None
 
-def get_price_history(keyword, site, hours=24):
-    """Получает историю цен за последние N часов"""
-    import time
+def get_last_items(site, limit=5):
+    """Получает последние N товаров с сайта (с ценами в рублях)"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT price, timestamp, title, url 
+            SELECT title, price, price_rub, url, site 
+            FROM price_cache 
+            WHERE site = ? 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        """, (site, limit))
+        data = c.fetchall()
+        conn.close()
+        
+        items = []
+        for title, price_cny, price_rub, url, site in data:
+            items.append({
+                "title": title,
+                "price_cny": price_cny,
+                "price_rub": price_rub,
+                "url": url,
+                "site": site
+            })
+        return items
+    except Exception as e:
+        print(f"Ошибка get_last_items: {e}")
+        return []
+
+def get_price_history(keyword, site, hours=24):
+    """Получает историю цен за последние N часов"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            SELECT price, price_rub, timestamp, title, url 
             FROM price_cache 
             WHERE keyword = ? AND site = ? AND timestamp > ?
             ORDER BY timestamp DESC
@@ -325,7 +326,6 @@ def get_price_history(keyword, site, hours=24):
 
 def clear_old_cache(days=7):
     """Очищает старый кеш"""
-    import time
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -339,7 +339,6 @@ def clear_old_cache(days=7):
 # --- Функции для логов ---
 
 def log_action(user_id, action):
-    """Логирует действие пользователя"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -350,7 +349,6 @@ def log_action(user_id, action):
         print(f"Ошибка логирования: {e}")
 
 def get_user_logs(user_id, limit=50):
-    """Получает логи пользователя"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -371,25 +369,16 @@ def get_user_logs(user_id, limit=50):
 # --- Статистика ---
 
 def get_stats():
-    """Получает статистику по базе"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        
-        # Количество пользователей
         c.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
         users_count = c.fetchone()[0]
-        
-        # Количество критериев
         c.execute("SELECT COUNT(*) FROM criteria")
         criteria_count = c.fetchone()[0]
-        
-        # Количество записей в кеше
         c.execute("SELECT COUNT(*) FROM price_cache")
         cache_count = c.fetchone()[0]
-        
         conn.close()
-        
         return {
             "users": users_count,
             "criteria": criteria_count,
@@ -399,10 +388,9 @@ def get_stats():
         print(f"Ошибка получения статистики: {e}")
         return {"users": 0, "criteria": 0, "cache_entries": 0}
 
-# --- Очистка БД (для админа) ---
+# --- Очистка БД ---
 
 def clear_all_data():
-    """Очищает все данные (для админа)"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -418,22 +406,6 @@ def clear_all_data():
         print(f"Ошибка очистки данных: {e}")
         return False
 
-# --- Для тестирования ---
-
 if __name__ == "__main__":
-    # Тестирование
     init_db()
-    
-    # Добавляем тестового пользователя
-    add_user(123456, "test_user", "Test")
-    
-    # Добавляем критерий
-    add_criteria(123456, "Raf Simons", 10)
-    
-    # Получаем критерии
-    criteria = get_user_criteria(123456)
-    print(f"Критерии: {criteria}")
-    
-    # Получаем статистику
-    stats = get_stats()
-    print(f"Статистика: {stats}")
+    print("✅ База данных создана/обновлена")
